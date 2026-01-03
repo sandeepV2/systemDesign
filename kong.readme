@@ -1,0 +1,203 @@
+I have formatted your guide into a clean, professional `README.md` file. I have also applied the fix for the Docker image error you encountered earlier (changing `kong/kong-gateway:3.8.0` to `kong:3.8`) and cleaned up the `version` warning.
+
+---
+
+# Kong Gateway Local Setup Guide (DB-less Mode)
+
+Kong Gateway uses declarative YAML (DB-less mode) for local testing, making it simple to configure auth and rate limiting without a database. This setup runs everything in Docker Compose with a mock backend API.
+
+## Step 1: Create Project Directory
+
+```bash
+mkdir kong-local && cd kong-local
+
+```
+
+### Create `docker-compose.yml`
+
+This configuration sets up Kong in DB-less mode and **httpbin** as your backend service.
+
+```yaml
+services:
+  kong:
+    image: kong:3.8  # Using stable OSS image
+    container_name: kong
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    ports:
+      - "8000:8000"   # Proxy (Your API Gateway)
+      - "8001:8001"   # Admin API
+    volumes:
+      - ./kong.yml:/kong/declarative/kong.yml
+    networks:
+      - kong-net
+    depends_on:
+      - backend
+
+  backend:
+    image: kennethreitz/httpbin
+    container_name: mock-backend
+    ports:
+      - "8080:80"
+    networks:
+      - kong-net
+
+networks:
+  kong-net:
+
+```
+
+---
+
+## Step 2: Basic Routing
+
+Create the initial `kong.yml` file in your directory:
+
+```yaml
+_format_version: "3.0"
+services:
+  - name: mock-service
+    url: http://backend:80
+    routes:
+      - name: mock-route
+        paths:
+          - /api
+
+```
+
+### Start the Stack
+
+```bash
+docker compose up -d
+
+```
+
+### Test Routing
+
+```bash
+curl -i http://localhost:8000/api/get?test=1
+
+```
+
+**Expected:** `200 OK` with JSON response from httpbin.
+
+---
+
+## Step 3: Concept 1 - Consumers
+
+Consumers represent API clients. Add this to your `kong.yml` under the services section:
+
+```yaml
+consumers:
+  - username: demo-app
+    keyauth_credentials:
+      - key: abc123xyz789
+
+```
+
+> **Note:** Restart Kong to apply changes: `docker compose restart kong`
+
+---
+
+## Step 4: Concept 2 - Key-Auth Plugin
+
+This requires an `apikey` header to access the service. Add a `plugins` section to `kong.yml`:
+
+```yaml
+plugins:
+  - name: key-auth
+    config:
+      key_names:
+        - apikey
+      hide_credentials: true
+
+```
+
+### Test Authentication
+
+```bash
+# Should return 401 Unauthorized
+curl -i http://localhost:8000/api/get
+
+# Should return 200 OK
+curl -i http://localhost:8000/api/get -H "apikey: abc123xyz789"
+
+```
+
+---
+
+## Step 5: Concept 3 - Rate Limiting Plugin
+
+Limit requests per time window per Consumer. Update your `plugins` section:
+
+```yaml
+  - name: rate-limiting
+    config:
+      minute: 3
+      policy: local
+      limit_by: consumer
+
+```
+
+### Test Limits
+
+```bash
+for i in {1..5}; do curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8000/api/get -H "apikey: abc123xyz789"; done
+
+```
+
+The first 3 requests will succeed (`200`), the next will fail (`429`).
+
+---
+
+## Step 6: Full `kong.yml` Example
+
+```yaml
+_format_version: "3.0"
+services:
+  - name: mock-service
+    url: http://backend:80
+    routes:
+      - name: mock-route
+        paths:
+          - /api
+
+consumers:
+  - username: demo-app
+    keyauth_credentials:
+      - key: abc123xyz789
+  - username: demo-app-2
+    keyauth_credentials:
+      - key: def456uvw012
+
+plugins:
+  - name: key-auth
+    config:
+      key_names: ["apikey"]
+      hide_credentials: true
+  - name: rate-limiting
+    config:
+      minute: 3
+      policy: local
+      limit_by: consumer
+
+```
+
+---
+
+## Monitoring and Logs
+
+* **Tail Logs:** `docker compose logs -f kong`
+* **Admin API Check:** `curl http://localhost:8001/services`
+* **Cleanup:** `docker compose down -v`
+
+---
+
+**Would you like me to add a section on how to use `deck` to manage this configuration without restarting the container?**
